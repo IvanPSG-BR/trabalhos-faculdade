@@ -1,9 +1,11 @@
 import tkinter as tk
 from tkinter import ttk
-from funcionalidades.busca import buscar, listar_generos
-from utils import (
+from funcionalidades.busca import buscar_api, buscar_por_genero, buscar_com_filtro
+from dados import GENEROS as _GENEROS
+from telas.inicio import (
     COR_FUNDO, COR_PESQUISA, COR_SUBTEXTO, COR_TEXTO,
     COR_DESTAQUE, COR_CAPA, COR_CARD,
+    carregar_imagem,
 )
 
 _SEM_FILTRO = "Todos os gêneros"
@@ -18,42 +20,67 @@ CARD_H  = 168
 # ── Helper privado ────────────────────────────────────────────────────────────
 def _criar_card(frame_grade, filme, row, col):
     """Card menor, posicionado via grid(), para a grade de resultados."""
+    titulo = filme.get("title", "")
+    poster = filme.get("poster_path")
+
     card = tk.Frame(frame_grade, bg=COR_FUNDO)
     card.grid(row=row, column=col, padx=6, pady=8, sticky="n")
 
     capa = tk.Canvas(card, width=CARD_W, height=CARD_H, bg=COR_CAPA,
                      highlightthickness=0, cursor="hand2")
-    capa.create_text(CARD_W // 2, CARD_H // 2 - 10,
-                     text="🎬", font=("Helvetica", 22))
-    capa.create_text(CARD_W // 2, CARD_H // 2 + 18,
-                     text=filme["ano"], fill=COR_SUBTEXTO, font=("Helvetica", 9))
+    ph_id = capa.create_text(CARD_W // 2, CARD_H // 2,
+                              text="🎬", font=("Helvetica", 22), fill=COR_SUBTEXTO)
     capa.pack()
 
-    tk.Label(card, text=filme["titulo"], bg=COR_FUNDO, fg=COR_TEXTO,
+    tk.Label(card, text=titulo, bg=COR_FUNDO, fg=COR_TEXTO,
              font=("Helvetica", 8), wraplength=CARD_W,
              justify="center").pack(pady=(4, 0))
 
+    if poster:
+        def _aplicar(photo, c=capa, pid=ph_id):
+            c.delete(pid)
+            c.create_image(0, 0, anchor="nw", image=photo)
+            c._img = photo
+        carregar_imagem(poster, CARD_W, CARD_H,
+                        lambda photo: capa.after(0, lambda p=photo: _aplicar(p)))
+
 
 # ── Tela de resultados ────────────────────────────────────────────────────────
-def renderizarResultados(tela, todos_os_filmes, query, genero=None):
+def renderizarResultados(tela, filmes_inicio, query, genero=None, _pagina=1):
     """
     Limpa a janela e monta a tela de resultados.
-    - `query`  : texto digitado na barra de pesquisa (pode ser vazio).
-    - `genero` : filtro de gênero ativo (None = sem filtro).
-    Redireciona para a tela inicial se ambos estiverem vazios.
+    - `filmes_inicio` : dict {genero: Response} retornado por dados.carregar_filmes().
+    - `query`         : texto digitado na barra de pesquisa (pode ser vazio).
+    - `genero`        : filtro de gênero ativo (None = sem filtro).
+    - `_pagina`       : página atual (1-indexed); para busca via API cada página
+                        corresponde a uma chamada ao endpoint /search/movie/.
+    Redireciona para a tela inicial se query e genero estiverem vazios.
     """
     # Guarda: sem query e sem gênero → volta para o início
     if not query.strip() and not genero:
         from telas.inicio import renderizarInicio
-        renderizarInicio(tela, todos_os_filmes)
+        renderizarInicio(tela, filmes_inicio)
         return
 
     for w in tela.winfo_children():
         w.destroy()
 
-    resultados = buscar(query, todos_os_filmes, genero=genero)
-    total_pags = max(1, (len(resultados) + POR_PAG - 1) // POR_PAG)
-    pagina     = [0]
+    # ── Busca — três casos distintos ─────────────────────────────────────────
+    if query.strip() and genero:
+        # Query + filtro de gênero: agrega múltiplas páginas da API e pagina
+        # localmente para garantir páginas com tamanho uniforme (≤ POR_PAG).
+        resultados, total_pags = buscar_com_filtro(
+            query, genero, pagina_local=_pagina, por_pagina=POR_PAG)
+
+    elif query.strip():
+        # Só query: paginação direta via API (cada _pagina = 1 chamada).
+        resultados, total_pags = buscar_api(query, page=_pagina)
+        total_pags = max(1, total_pags)
+
+    else:
+        # Só gênero (vindo do "Ver Mais"): usa /discover/movie com paginação.
+        resultados, total_pags = buscar_por_genero(genero, page=_pagina)
+        total_pags = max(1, total_pags)
 
     # ── Cabeçalho / barra de pesquisa + filtro de gênero ─────────────────────
     cabecalho = tk.Frame(tela, bg=COR_FUNDO, pady=14)
@@ -75,8 +102,8 @@ def renderizarResultados(tela, todos_os_filmes, query, genero=None):
     tk.Frame(frame_pesquisa, bg="#555555", width=1,
              height=22).pack(side="left", padx=10)
 
-    # Combobox de gênero — permite selecionar/trocar/remover filtro manualmente
-    generos_disponiveis = [_SEM_FILTRO] + listar_generos(todos_os_filmes)
+    # Combobox de gênero — lista fixa de todos os gêneros disponíveis
+    generos_disponiveis = [_SEM_FILTRO] + [g["name"] for g in _GENEROS]
     combo_genero = ttk.Combobox(frame_pesquisa, values=generos_disponiveis,
                                 width=16, state="readonly")
     combo_genero.set(genero if genero else _SEM_FILTRO)
@@ -87,7 +114,8 @@ def renderizarResultados(tela, todos_os_filmes, query, genero=None):
         termo      = entrada.get().strip()
         sel        = combo_genero.get()
         genero_sel = None if sel == _SEM_FILTRO else sel
-        renderizarResultados(tela, todos_os_filmes, termo, genero=genero_sel)
+        # Nova busca sempre começa na página 1
+        renderizarResultados(tela, filmes_inicio, termo, genero=genero_sel, _pagina=1)
 
     entrada.bind("<Return>", _nova_busca)
     combo_genero.bind("<<ComboboxSelected>>", _nova_busca)
@@ -133,61 +161,39 @@ def renderizarResultados(tela, todos_os_filmes, query, genero=None):
     for c in range(COLS):
         frame_grade.columnconfigure(c, weight=1)
 
+    if not resultados:
+        tk.Label(frame_grade,
+                 text="Nenhum filme encontrado para esta busca.",
+                 bg=COR_FUNDO, fg=COR_SUBTEXTO,
+                 font=("Helvetica", 13)).grid(row=0, column=0,
+                                              columnspan=COLS, pady=40)
+    else:
+        for i, filme in enumerate(resultados):
+            _criar_card(frame_grade, filme, i // COLS, i % COLS)
+
     # ── Paginação ─────────────────────────────────────────────────────────────
-    frame_pag = tk.Frame(frame_conteudo, bg=COR_FUNDO, pady=18)
-    frame_pag.pack()
+    # Cada página corresponde a uma chamada à API; navegar reconstrói a tela.
+    if total_pags > 1:
+        frame_pag = tk.Frame(frame_conteudo, bg=COR_FUNDO, pady=18)
+        frame_pag.pack()
 
-    # ── Funções internas ──────────────────────────────────────────────────────
-    def _renderizar_pagina():
-        for w in frame_grade.winfo_children():
-            w.destroy()
-
-        inicio         = pagina[0] * POR_PAG
-        filmes_pagina  = resultados[inicio:inicio + POR_PAG]
-
-        if not filmes_pagina:
-            tk.Label(frame_grade,
-                     text="Nenhum filme encontrado para esta busca.",
-                     bg=COR_FUNDO, fg=COR_SUBTEXTO,
-                     font=("Helvetica", 13)).grid(row=0, column=0,
-                                                  columnspan=COLS, pady=40)
-        else:
-            for i, filme in enumerate(filmes_pagina):
-                _criar_card(frame_grade, filme, i // COLS, i % COLS)
-
-        _atualizar_paginacao()
-        tela.update_idletasks()
-        canvas.yview_moveto(0)
-
-    def _atualizar_paginacao():
-        for w in frame_pag.winfo_children():
-            w.destroy()
-        if total_pags <= 1:
-            return
-
-        def _anterior():
-            pagina[0] -= 1
-            _renderizar_pagina()
-
-        def _proxima():
-            pagina[0] += 1
-            _renderizar_pagina()
-
-        tk.Button(frame_pag, text="◀  Anterior", command=_anterior,
+        tk.Button(frame_pag, text="◀  Anterior",
+                  command=lambda: renderizarResultados(
+                      tela, filmes_inicio, query, genero=genero, _pagina=_pagina - 1),
                   bg=COR_CARD, fg=COR_TEXTO, font=("Helvetica", 10),
                   relief="flat", padx=10, pady=4,
-                  state="normal" if pagina[0] > 0 else "disabled"
+                  state="normal" if _pagina > 1 else "disabled",
                   ).pack(side="left", padx=6)
 
         tk.Label(frame_pag,
-                 text=f"Página {pagina[0] + 1} de {total_pags}",
+                 text=f"Página {_pagina} de {total_pags}",
                  bg=COR_FUNDO, fg=COR_SUBTEXTO,
                  font=("Helvetica", 10)).pack(side="left", padx=14)
 
-        tk.Button(frame_pag, text="Próxima  ▶", command=_proxima,
+        tk.Button(frame_pag, text="Próxima  ▶",
+                  command=lambda: renderizarResultados(
+                      tela, filmes_inicio, query, genero=genero, _pagina=_pagina + 1),
                   bg=COR_CARD, fg=COR_TEXTO, font=("Helvetica", 10),
                   relief="flat", padx=10, pady=4,
-                  state="normal" if pagina[0] < total_pags - 1 else "disabled"
+                  state="normal" if _pagina < total_pags else "disabled",
                   ).pack(side="left", padx=6)
-
-    _renderizar_pagina()

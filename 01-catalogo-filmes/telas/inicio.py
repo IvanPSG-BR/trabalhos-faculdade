@@ -1,7 +1,156 @@
+import io
+import threading
 import tkinter as tk
-from utils import COR_FUNDO, COR_PESQUISA, COR_SUBTEXTO, COR_TEXTO, COR_DESTAQUE, construir_faixas
+import requests as req
+from PIL import Image, ImageTk
+
+# ── Cache de posters ──────────────────────────────────────────────────────────
+_IMAGE_CACHE: dict = {}
+_cache_lock         = threading.Lock()
+
+# ── Paleta ───────────────────────────────────────────────────────────────────
+COR_FUNDO    = "#141414"
+COR_FAIXA    = "#1f1f1f"
+COR_CARD     = "#2a2a2a"
+COR_CAPA     = "#3a3a3a"
+COR_TEXTO    = "#ffffff"
+COR_SUBTEXTO = "#b3b3b3"
+COR_DESTAQUE = "#e50914"
+COR_PESQUISA = "#333333"
+
+# ── Dimensões ────────────────────────────────────────────────────────────────
+CAPA_LARGURA = 130
+CAPA_ALTURA  = 190
+CARD_PADDING = 10
 
 
+# ── Carregamento assíncrono de posters ───────────────────────────────────────
+def carregar_imagem(poster_path, largura, altura, callback):
+    """
+    Baixa o poster do TMDB em background e chama callback(photo) quando pronto.
+    Usa cache em memória para evitar downloads repetidos.
+    """
+    if not poster_path:
+        return
+    url = f"https://image.tmdb.org/t/p/w185{poster_path}"
+    with _cache_lock:
+        if url in _IMAGE_CACHE:
+            callback(_IMAGE_CACHE[url])
+            return
+
+    def _fetch():
+        try:
+            resp = req.get(url, timeout=10)
+            if resp.ok:
+                img   = Image.open(io.BytesIO(resp.content)).resize(
+                    (largura, altura), Image.LANCZOS)
+                photo = ImageTk.PhotoImage(img)
+                with _cache_lock:
+                    _IMAGE_CACHE[url] = photo
+                callback(photo)
+        except Exception:
+            pass
+
+    threading.Thread(target=_fetch, daemon=True).start()
+
+
+# ── Helpers de renderização das faixas ───────────────────────────────────────
+def _extrair_lista(filmes):
+    """
+    Recebe o dict {genero: Response} e devolve uma lista plana de filmes
+    no formato TMDB, sem duplicatas (deduplicados pelo campo 'id').
+    """
+    vistos = set()
+    todos  = []
+    for response in filmes.values():
+        if response is None or not response.ok:
+            continue
+        for filme in response.json().get("results", []):
+            if filme["id"] not in vistos:
+                vistos.add(filme["id"])
+                todos.append(filme)
+    return todos
+
+
+def _criar_card(pai, filme):
+    """
+    Cria o widget de card (poster + título) de um filme.
+    Espera um dict no formato TMDB: campos 'title', 'release_date', 'poster_path'.
+    """
+    titulo = filme.get("title", "")
+    ano    = filme.get("release_date", "")[:4] or "—"
+    poster = filme.get("poster_path")
+
+    card = tk.Frame(pai, bg=COR_FUNDO, padx=CARD_PADDING)
+    card.pack(side="left", anchor="n")
+
+    capa = tk.Canvas(card, width=CAPA_LARGURA, height=CAPA_ALTURA,
+                     bg=COR_CAPA, highlightthickness=0, cursor="hand2")
+    ph_id = capa.create_text(CAPA_LARGURA // 2, CAPA_ALTURA // 2,
+                              text="🎬", font=("Helvetica", 28), fill=COR_SUBTEXTO)
+    capa.pack()
+
+    tk.Label(card, text=titulo, bg=COR_FUNDO, fg=COR_TEXTO,
+             font=("Helvetica", 9), wraplength=CAPA_LARGURA,
+             justify="center").pack(pady=(5, 0))
+
+    if poster:
+        def _aplicar(photo, c=capa, pid=ph_id):
+            c.delete(pid)
+            c.create_image(0, 0, anchor="nw", image=photo)
+            c._img = photo  # impede GC
+        carregar_imagem(poster, CAPA_LARGURA, CAPA_ALTURA,
+                        lambda photo: capa.after(0, lambda p=photo: _aplicar(p)))
+
+
+def _criar_botao_mais(pai, genero, callback):
+    """Botão 'Ver mais' no final de uma faixa; chama callback(genero) ao clicar."""
+    frame = tk.Frame(pai, bg=COR_FUNDO, padx=CARD_PADDING)
+    frame.pack(side="left", anchor="center")
+
+    btn = tk.Canvas(frame, width=70, height=CAPA_ALTURA, bg=COR_FAIXA,
+                    highlightthickness=0, cursor="hand2")
+    btn.create_text(35, CAPA_ALTURA // 2 - 12,
+                    text="›", font=("Helvetica", 34), fill=COR_TEXTO)
+    btn.create_text(35, CAPA_ALTURA // 2 + 18,
+                    text="Ver mais", font=("Helvetica", 8), fill=COR_SUBTEXTO)
+    btn.pack()
+    btn.bind("<Button-1>", lambda e: callback(genero))
+
+
+def _construir_faixas(frame_pai, filmes, ao_clicar_mais=None):
+    """
+    Cria todas as faixas de gênero dentro do frame pai.
+    `filmes` deve ser um dict {genero: requests.Response} (formato de dados.py).
+    Ignora silenciosamente gêneros com resposta inválida ou lista vazia.
+    Se `ao_clicar_mais` for fornecido, adiciona um botão 'Ver mais' ao fim de cada faixa.
+    """
+    for genero, response in filmes.items():
+        if response is None or not response.ok:
+            continue
+
+        lista = response.json().get("results", [])
+        if not lista:
+            continue
+
+        faixa = tk.Frame(frame_pai, bg=COR_FUNDO)
+        faixa.pack(fill="x", pady=(10, 0))
+
+        tk.Label(faixa, text=genero, bg=COR_FUNDO, fg=COR_TEXTO,
+                 font=("Helvetica", 15, "bold"), anchor="w",
+                 padx=20).pack(fill="x", pady=(0, 8))
+
+        linha = tk.Frame(faixa, bg=COR_FUNDO, padx=10)
+        linha.pack(fill="x", anchor="w")
+
+        for filme in lista[:6]:
+            _criar_card(linha, filme)
+
+        if ao_clicar_mais:
+            _criar_botao_mais(linha, genero, ao_clicar_mais)
+
+
+# ── Tela inicial ──────────────────────────────────────────────────────────────
 def renderizarInicio(tela, filmes):
     """Monta toda a interface da tela inicial dentro da janela recebida."""
     for w in tela.winfo_children():
@@ -94,4 +243,4 @@ def renderizarInicio(tela, filmes):
         from telas.resultados import renderizarResultados
         renderizarResultados(tela, filmes, "", genero=genero)
 
-    construir_faixas(frame_conteudo, filmes, ao_clicar_mais=_ao_clicar_mais)
+    _construir_faixas(frame_conteudo, filmes, ao_clicar_mais=_ao_clicar_mais)
