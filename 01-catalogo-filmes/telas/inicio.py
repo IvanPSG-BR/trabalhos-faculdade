@@ -25,14 +25,15 @@ CARD_PADDING = 10
 
 
 # ── Carregamento assíncrono de posters ───────────────────────────────────────
-def carregar_imagem(poster_path, largura, altura, callback):
+def carregar_imagem(poster_path, largura, altura, callback, tamanho="w185"):
     """
     Baixa o poster do TMDB em background e chama callback(photo) quando pronto.
-    Usa cache em memória para evitar downloads repetidos.
+    `tamanho` é o bucket TMDB (w92, w185, w342, w500, w780, original).
+    A chave de cache inclui o tamanho para evitar colisões entre resoluções distintas.
     """
     if not poster_path:
         return
-    url = f"https://image.tmdb.org/t/p/w185{poster_path}"
+    url = f"https://image.tmdb.org/t/p/{tamanho}{poster_path}"
     with _cache_lock:
         if url in _IMAGE_CACHE:
             callback(_IMAGE_CACHE[url])
@@ -72,10 +73,11 @@ def _extrair_lista(filmes):
     return todos
 
 
-def _criar_card(pai, filme):
+def _criar_card(pai, filme, ao_clicar=None):
     """
     Cria o widget de card (poster + título) de um filme.
     Espera um dict no formato TMDB: campos 'title', 'release_date', 'poster_path'.
+    `ao_clicar`, se fornecido, é chamado com o dict do filme ao clicar no card.
     """
     titulo = filme.get("title", "")
     ano    = filme.get("release_date", "")[:4] or "—"
@@ -90,9 +92,15 @@ def _criar_card(pai, filme):
                               text="🎬", font=("Helvetica", 28), fill=COR_SUBTEXTO)
     capa.pack()
 
-    tk.Label(card, text=titulo, bg=COR_FUNDO, fg=COR_TEXTO,
-             font=("Helvetica", 9), wraplength=CAPA_LARGURA,
-             justify="center").pack(pady=(5, 0))
+    lbl_titulo = tk.Label(card, text=titulo, bg=COR_FUNDO, fg=COR_TEXTO,
+                          font=("Helvetica", 9), wraplength=CAPA_LARGURA,
+                          justify="center", cursor="hand2")
+    lbl_titulo.pack(pady=(5, 0))
+
+    if ao_clicar:
+        handler = lambda e, f=filme: ao_clicar(f)
+        capa.bind("<Button-1>", handler)
+        lbl_titulo.bind("<Button-1>", handler)
 
     if poster:
         def _aplicar(photo, c=capa, pid=ph_id):
@@ -118,12 +126,13 @@ def _criar_botao_mais(pai, genero, callback):
     btn.bind("<Button-1>", lambda e: callback(genero))
 
 
-def _construir_faixas(frame_pai, filmes, ao_clicar_mais=None):
+def _construir_faixas(frame_pai, filmes, ao_clicar_mais=None, ao_clicar_filme=None):
     """
     Cria todas as faixas de gênero dentro do frame pai.
     `filmes` deve ser um dict {genero: requests.Response} (formato de dados.py).
     Ignora silenciosamente gêneros com resposta inválida ou lista vazia.
-    Se `ao_clicar_mais` for fornecido, adiciona um botão 'Ver mais' ao fim de cada faixa.
+    `ao_clicar_mais`  : callback(genero) para o botão 'Ver mais'.
+    `ao_clicar_filme` : callback(filme)  para clicar em um card.
     """
     for genero, response in filmes.items():
         if response is None or not response.ok:
@@ -144,7 +153,7 @@ def _construir_faixas(frame_pai, filmes, ao_clicar_mais=None):
         linha.pack(fill="x", anchor="w")
 
         for filme in lista[:6]:
-            _criar_card(linha, filme)
+            _criar_card(linha, filme, ao_clicar=ao_clicar_filme)
 
         if ao_clicar_mais:
             _criar_botao_mais(linha, genero, ao_clicar_mais)
@@ -243,4 +252,10 @@ def renderizarInicio(tela, filmes):
         from telas.resultados import renderizarResultados
         renderizarResultados(tela, filmes, "", genero=genero)
 
-    _construir_faixas(frame_conteudo, filmes, ao_clicar_mais=_ao_clicar_mais)
+    def _ao_clicar_filme(filme):
+        from telas.filme import renderizarFilme
+        renderizarFilme(tela, filme, voltar=lambda: renderizarInicio(tela, filmes))
+
+    _construir_faixas(frame_conteudo, filmes,
+                      ao_clicar_mais=_ao_clicar_mais,
+                      ao_clicar_filme=_ao_clicar_filme)

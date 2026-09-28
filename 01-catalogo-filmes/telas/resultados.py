@@ -18,7 +18,7 @@ CARD_H  = 168
 
 
 # ── Helper privado ────────────────────────────────────────────────────────────
-def _criar_card(frame_grade, filme, row, col):
+def _criar_card(frame_grade, filme, row, col, ao_clicar=None):
     """Card menor, posicionado via grid(), para a grade de resultados."""
     titulo = filme.get("title", "")
     poster = filme.get("poster_path")
@@ -32,9 +32,15 @@ def _criar_card(frame_grade, filme, row, col):
                               text="🎬", font=("Helvetica", 22), fill=COR_SUBTEXTO)
     capa.pack()
 
-    tk.Label(card, text=titulo, bg=COR_FUNDO, fg=COR_TEXTO,
-             font=("Helvetica", 8), wraplength=CARD_W,
-             justify="center").pack(pady=(4, 0))
+    lbl_titulo = tk.Label(card, text=titulo, bg=COR_FUNDO, fg=COR_TEXTO,
+                          font=("Helvetica", 8), wraplength=CARD_W,
+                          justify="center", cursor="hand2")
+    lbl_titulo.pack(pady=(4, 0))
+
+    if ao_clicar:
+        handler = lambda e, f=filme: ao_clicar(f)
+        capa.bind("<Button-1>", handler)
+        lbl_titulo.bind("<Button-1>", handler)
 
     if poster:
         def _aplicar(photo, c=capa, pid=ph_id):
@@ -161,6 +167,13 @@ def renderizarResultados(tela, filmes_inicio, query, genero=None, _pagina=1):
     for c in range(COLS):
         frame_grade.columnconfigure(c, weight=1)
 
+    def _ao_clicar_filme(f):
+        from telas.filme import renderizarFilme
+        renderizarFilme(tela, f,
+                        voltar=lambda: renderizarResultados(
+                            tela, filmes_inicio, query,
+                            genero=genero, _pagina=_pagina))
+
     if not resultados:
         tk.Label(frame_grade,
                  text="Nenhum filme encontrado para esta busca.",
@@ -169,7 +182,8 @@ def renderizarResultados(tela, filmes_inicio, query, genero=None, _pagina=1):
                                               columnspan=COLS, pady=40)
     else:
         for i, filme in enumerate(resultados):
-            _criar_card(frame_grade, filme, i // COLS, i % COLS)
+            _criar_card(frame_grade, filme, i // COLS, i % COLS,
+                        ao_clicar=_ao_clicar_filme)
 
     # ── Paginação ─────────────────────────────────────────────────────────────
     # Cada página corresponde a uma chamada à API; navegar reconstrói a tela.
